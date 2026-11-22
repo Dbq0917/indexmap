@@ -113,3 +113,38 @@ fn test_serde_seq_map() {
         ],
     );
 }
+
+#[test]
+fn remove_then_roundtrip_preserves_order_and_lookup() {
+    let mut map: IndexMap<i32, i32> = IndexMap::new();
+    for key in 0..50 {
+        map.insert(key, key * 10);
+    }
+
+    for key in [10_i32, 25, 11, 40, 24] {
+        map.shift_remove(&key);
+    }
+    for key in [3_i32, 33, 47] {
+        map.swap_remove(&key);
+    }
+
+    // Sanity check the in-memory indices after the removals.
+    for (position, (key, value)) in map.iter().enumerate() {
+        assert_eq!(map.get_index(position), Some((key, value)));
+        assert_eq!(map.get_index_of(key), Some(position));
+    }
+
+    // Simulate a restart: serialize the map and read it back.
+    let mut tokens = vec![Token::Map {
+        len: Some(map.len()),
+    }];
+    for (key, value) in &map {
+        tokens.push(Token::I32(*key));
+        tokens.push(Token::I32(*value));
+    }
+    tokens.push(Token::MapEnd);
+    assert_tokens(&map, &tokens);
+
+    // Deserializing the tokens must reproduce the exact post-removal order.
+    serde_test::assert_de_tokens(&map, &tokens);
+}
