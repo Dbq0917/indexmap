@@ -416,12 +416,24 @@ impl<K, V, S> IndexMap<K, V, S> {
 
     /// Shrink the capacity of the map as much as possible.
     ///
+    /// The map keeps some headroom above its current length rather than
+    /// shrinking to an exact fit, and a shrink only happens when the current
+    /// allocation is substantially larger than needed. This keeps alternating
+    /// inserts and removals around a steady length from rehashing the table on
+    /// every call, while still returning memory once the map is significantly
+    /// over-allocated.
+    ///
     /// Computes in **O(n)** time.
     pub fn shrink_to_fit(&mut self) {
         self.core.shrink_to(0);
     }
 
     /// Shrink the capacity of the map with a lower limit.
+    ///
+    /// The capacity will not drop below `min_capacity`, and like
+    /// [`shrink_to_fit`](Self::shrink_to_fit) it keeps headroom and only
+    /// reallocates when the current allocation is substantially larger than
+    /// the limit.
     ///
     /// Computes in **O(n)** time.
     pub fn shrink_to(&mut self, min_capacity: usize) {

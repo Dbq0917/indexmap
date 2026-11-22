@@ -1,5 +1,14 @@
 # Releases
 
+## Unreleased
+
+- Changed the shrink capacity policy used by `shrink_to_fit` and `shrink_to`.
+  Shrinking now keeps headroom above the current length instead of fitting
+  exactly, and only reallocates when the underlying bucket allocation is
+  substantially larger than needed. This prevents repeated rehashing when
+  inserts and removals alternate around a steady length, while still returning
+  memory once a map or set is significantly over-allocated.
+
 ## 2.14.2 (2026-09-04)
 
 - Fix item hygiene in map and set macros. Previously, an internal `const CAP`

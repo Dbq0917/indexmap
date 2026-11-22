@@ -280,11 +280,60 @@ impl<K, V> Core<K, V> {
             .map_err(TryReserveError::from_alloc)
     }
 
-    /// Shrink the capacity of the map with a lower bound
+    /// Shrink the capacity of the map with a lower bound.
+    ///
+    /// The target keeps headroom above the needed length instead of shrinking
+    /// to an exact fit, and the shrink only happens when the table's bucket
+    /// count is at least one power-of-two step larger than the target. Working
+    /// in bucket counts (rather than the effective capacity, which drifts with
+    /// tombstones) keeps the decision stable: a steady-length workload never
+    /// re-crosses the threshold, so the table does not ping-pong between
+    /// shrinking and growing (each a full rehash), while memory is still
+    /// returned once the table is substantially over-allocated.
     pub(crate) fn shrink_to(&mut self, min_capacity: usize) {
-        self.indices
-            .shrink_to(min_capacity, get_hash(&self.entries));
-        self.entries.shrink_to(min_capacity);
+        let len = self.entries.len();
+        let needed = len.max(min_capacity);
+        let headroom = Self::shrink_capacity(needed);
+        let target_buckets = Self::buckets_for_capacity(headroom);
+        if self.indices.num_buckets() <= target_buckets {
+            return;
+        }
+        self.indices.shrink_to(headroom, get_hash(&self.entries));
+        // Match the entries allocation to the indices' effective capacity so
+        // both structures report the same capacity and cannot wobble apart.
+        let synced = Ord::min(self.indices.capacity(), Self::MAX_ENTRIES_CAPACITY);
+        self.entries.shrink_to(synced);
+    }
+
+    /// Bucket count the underlying table needs to hold at least `capacity`
+    /// elements at its ~87.5% maximum load factor.
+    #[inline]
+    fn buckets_for_capacity(capacity: usize) -> usize {
+        if capacity <= 3 {
+            // The smallest tables have a fixed 4-bucket allocation.
+            return 4;
+        }
+        let needed_buckets = capacity.saturating_mul(8).div_ceil(7);
+        needed_buckets.next_power_of_two()
+    }
+
+    /// Capacity to shrink to for a table that must hold at least `needed`
+    /// elements: the needed capacity plus half again as headroom. A table
+    /// shrunk to this target can take 50% more entries before it grows. Since
+    /// the shrink itself only moves to a smaller bucket allocation, a table at
+    /// a steady length stays on the same allocation instead of bouncing.
+    #[inline]
+    fn shrink_capacity(needed: usize) -> usize {
+        needed.saturating_add(needed / 2).saturating_add(1)
+    }
+
+    /// Number of buckets in the underlying hash table. Unlike `capacity`,
+    /// this only changes on a real allocation, never because of an in-place
+    /// rehash triggered by tombstones, so it is a stable measure of whether the
+    /// table actually grew or shrank.
+    #[cfg(test)]
+    pub(crate) fn allocation_buckets(&self) -> usize {
+        self.indices.num_buckets()
     }
 
     /// Remove the last key-value pair

@@ -340,9 +340,69 @@ fn shrink_to_fit() {
         assert_eq!(set.get(&i), Some(&i));
         set.shrink_to_fit();
         assert_eq!(set.len(), i + 1);
-        assert_eq!(set.capacity(), i + 1);
+        assert!(set.capacity() > i);
+        // Shrinking is idempotent: a second call must not move the capacity,
+        // which would be the start of a grow/shrink oscillation.
+        let capacity = set.capacity();
+        set.shrink_to_fit();
+        assert_eq!(set.capacity(), capacity);
         assert_eq!(set.get(&i), Some(&i));
     }
+}
+
+#[test]
+fn shrink_keeps_headroom_without_grow_thrash() {
+    // The set stays around a steady length: each batch adds a few entries,
+    // then the same number is removed again and shrink_to_fit is called. A
+    // real resize only counts when the underlying bucket allocation changes.
+    let mut set = IndexSet::<usize>::new();
+    let steady_len = 2_000;
+    for value in 0..steady_len {
+        set.insert(value);
+    }
+    set.shrink_to_fit();
+
+    let mut resizes = 0;
+    let mut buckets = set.map.core.allocation_buckets();
+    for batch in 0..40usize {
+        let base = steady_len + batch * 10;
+        for value in base..base + 10 {
+            set.insert(value);
+        }
+        if set.map.core.allocation_buckets() != buckets {
+            resizes += 1;
+            buckets = set.map.core.allocation_buckets();
+        }
+
+        for value in base..base + 10 {
+            set.swap_remove(&value);
+        }
+        set.shrink_to_fit();
+        if set.map.core.allocation_buckets() != buckets {
+            resizes += 1;
+            buckets = set.map.core.allocation_buckets();
+        }
+    }
+    assert!(resizes <= 3, "too many grow/shrink cycles: {resizes}");
+}
+
+#[test]
+fn shrink_releases_memory_when_substantially_oversized() {
+    let mut set = IndexSet::<usize>::new();
+    for value in 0..1_000 {
+        set.insert(value);
+    }
+    let full_capacity = set.capacity();
+    set.retain(|&value| value < 100);
+    set.shrink_to_fit();
+    assert!(set.capacity() < full_capacity);
+    assert!(set.capacity() >= set.len());
+
+    let capacity = set.capacity();
+    for value in 100..150 {
+        set.insert(value);
+    }
+    assert_eq!(set.capacity(), capacity);
 }
 
 #[test]
@@ -631,11 +691,10 @@ fn try_reserve_exact() {
     index_set.insert(10);
     index_set.insert(20);
     index_set.insert(30);
-    index_set.shrink_to_fit();
-    assert_eq!(index_set.capacity(), 3);
+    let len = index_set.len();
 
     index_set.try_reserve_exact(2).unwrap();
-    assert_eq!(index_set.capacity(), 5);
+    assert!(index_set.capacity() >= len + 2);
 }
 
 #[test]

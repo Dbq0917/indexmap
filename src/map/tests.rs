@@ -234,9 +234,73 @@ fn shrink_to_fit() {
         assert_eq!(map.get(&i), Some(&(i * i)));
         map.shrink_to_fit();
         assert_eq!(map.len(), i + 1);
-        assert_eq!(map.capacity(), i + 1);
+        assert!(map.capacity() > i);
+        // Shrinking is idempotent: a second call must not move the capacity,
+        // which would be the start of a grow/shrink oscillation.
+        let capacity = map.capacity();
+        map.shrink_to_fit();
+        assert_eq!(map.capacity(), capacity);
         assert_eq!(map.get(&i), Some(&(i * i)));
     }
+}
+
+#[test]
+fn shrink_keeps_headroom_without_grow_thrash() {
+    // Simulate a table that stays around a steady length of two million
+    // entries: each batch adds a few entries, then the same number is removed
+    // again and shrink_to_fit is called. A real resize only happens when the
+    // underlying bucket allocation changes (an in-place tombstone rehash does
+    // not count). The whole run must need only a handful of resizes instead of
+    // bouncing on every batch.
+    let mut map = IndexMap::<usize, usize>::new();
+    let steady_len = 2_000;
+    for key in 0..steady_len {
+        map.insert(key, key);
+    }
+    map.shrink_to_fit();
+
+    let mut resizes = 0;
+    let mut buckets = map.core.allocation_buckets();
+    for batch in 0..40usize {
+        let base = steady_len + batch * 10;
+        for key in base..base + 10 {
+            map.insert(key, key);
+        }
+        if map.core.allocation_buckets() != buckets {
+            resizes += 1;
+            buckets = map.core.allocation_buckets();
+        }
+
+        for key in base..base + 10 {
+            map.swap_remove_entry(&key);
+        }
+        map.shrink_to_fit();
+        if map.core.allocation_buckets() != buckets {
+            resizes += 1;
+            buckets = map.core.allocation_buckets();
+        }
+    }
+    assert!(resizes <= 3, "too many grow/shrink cycles: {resizes}");
+}
+
+#[test]
+fn shrink_releases_memory_when_substantially_oversized() {
+    let mut map = IndexMap::<usize, usize>::new();
+    for key in 0..1_000 {
+        map.insert(key, key);
+    }
+    let full_capacity = map.capacity();
+    map.retain(|&key, _| key < 100);
+    map.shrink_to_fit();
+    // With 10% of the entries left, the table must still give memory back.
+    assert!(map.capacity() < full_capacity);
+    assert!(map.capacity() >= map.len());
+    // And keep enough headroom for the shrunk length to insert without growing.
+    let capacity = map.capacity();
+    for key in 100..150 {
+        map.insert(key, key);
+    }
+    assert_eq!(map.capacity(), capacity);
 }
 
 #[test]
